@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flood Victim Triage</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--tx:#1b1f24;--mu:#5c6672;--bd:#d6dae0;--ac:#0b5cad}
+@media (prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1d2126;--tx:#e8eaed;--mu:#9aa4af;--bd:#333a42;--ac:#5aa7f0}}
+*{box-sizing:border-box}
+body{margin:0;font:15px system-ui,sans-serif;background:var(--bg);color:var(--tx);padding:12px;max-width:1000px;margin:auto}
+h1{font-size:20px;margin:4px 0 10px}h2{font-size:16px;margin:0 0 8px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+label{font-size:12px;color:var(--mu);display:block}
+input,select,textarea{width:100%;padding:8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx);font:inherit}
+button{padding:8px 12px;border:0;border-radius:6px;background:var(--ac);color:#fff;font:inherit;cursor:pointer;margin:4px 4px 0 0}
+button.g{background:transparent;color:var(--ac);border:1px solid var(--ac)}
+.tag{display:inline-block;padding:2px 8px;border-radius:10px;color:#fff;font-weight:600;font-size:12px}
+.RED{background:#c62828}.YELLOW{background:#b26a00}.GREEN{background:#2e7d32}.NA{background:#6b7480}
+#live{font-size:18px;font-weight:600}
+.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:640px}
+th,td{text-align:left;padding:6px;border-bottom:1px solid var(--bd);font-size:13px}
+.mu{color:var(--mu);font-size:12px}
+</style>
+</head>
+<body>
+<h1>Flood Victim Triage <span id="net" class="tag NA">…</span></h1>
+
+<div class="card">
+<h2>1. Sensor (ESP32 + MAX30102)</h2>
+<button id="bWifi">Connect via ESP32 Wi-Fi</button>
+<button id="bUsb" class="g">Connect via USB</button>
+<button id="bOff" class="g">Disconnect</button>
+<div class="mu">Wi-Fi: join network “TRIAGE-ESP32” first. USB needs Chrome or Edge on a laptop.</div>
+<p id="live">Sensor: not connected</p>
+</div>
+
+<div class="card">
+<h2>2. Patient record</h2>
+<div class="grid">
+<div><label>Name / ID</label><input id="name"></div>
+<div><label>Age</label><input id="age" type="number" min="0"></div>
+<div><label>Sex</label><select id="sex"><option>Unknown</option><option>Female</option><option>Male</option></select></div>
+<div><label>Location found</label><input id="loc"></div>
+<div><label>Volunteer name</label><input id="vol"></div>
+<div><label>Consciousness</label><select id="cons"><option>Alert</option><option>Responds to voice/pain</option><option>Unresponsive</option></select></div>
+<div><label>Heart rate (bpm)</label><input id="hr" type="number"></div>
+<div><label>SpO₂ (%)</label><input id="spo2" type="number"></div>
+<div><label>Temperature (°C)</label><input id="temp" type="number" step="0.1"></div>
+<div><label>BP systolic</label><input id="sys" type="number"></div>
+<div><label>BP diastolic</label><input id="dia" type="number"></div>
+</div>
+<label style="margin-top:8px">Volunteer note (injuries, symptoms, medicines, water exposure…)</label>
+<textarea id="note" rows="3"></textarea>
+<p>Priority: <span id="pri" class="tag NA">—</span> <span id="why" class="mu"></span></p>
+<button id="bSave">Save patient</button><button id="bClr" class="g">Clear form</button>
+</div>
+
+<div class="card">
+<h2>3. Sync to medical department</h2>
+<label>Server URL (leave blank until a network is available)</label>
+<input id="url" placeholder="https://your-server.example/api/patients">
+<button id="bSync">Sync now</button><button id="bCsv" class="g">Download CSV backup</button>
+<span id="syncMsg" class="mu"></span>
+</div>
+
+<div class="card">
+<h2>Patients (<span id="cnt">0</span>) – most urgent first</h2>
+<div class="scroll"><table><thead><tr><th>Priority</th><th>Name</th><th>Age</th><th>HR</th><th>SpO₂</th><th>Temp</th><th>BP</th><th>Location</th><th>Note</th><th>Synced</th></tr></thead><tbody id="rows"></tbody></table></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const F=['name','age','sex','loc','vol','cons','hr','spo2','temp','sys','dia','note'];
+const num=v=>v===''||v==null?null:Number(v);
+let db=[];try{db=JSON.parse(localStorage.getItem('pts')||'[]')}catch(e){}
+$('url').value=localStorage.getItem('url')||'';
+
+function triage(p){
+  const r=[],y=[];
+  if(p.spo2!=null&&p.spo2<90)r.push('SpO₂ <90');else if(p.spo2!=null&&p.spo2<94)y.push('SpO₂ <94');
+  if(p.hr!=null){if(p.hr>130||p.hr<40)r.push('HR critical');else if(p.hr>110||p.hr<50)y.push('HR abnormal')}
+  if(p.sys!=null){if(p.sys<90)r.push('BP low');else if(p.sys<100||p.sys>180)y.push('BP abnormal')}
+  if(p.temp!=null){if(p.temp>=40||p.temp<35)r.push('Temp critical');else if(p.temp>=38.5||p.temp<36)y.push('Temp abnormal')}
+  if(p.cons==='Unresponsive')r.push('Unresponsive');else if(p.cons!=='Alert')y.push('Reduced consciousness');
+  const has=['hr','spo2','temp','sys'].some(k=>p[k]!=null);
+  if(r.length)return['RED',r.join(', ')];
+  if(y.length)return['YELLOW',y.join(', ')];
+  return has?['GREEN','Vitals in normal range']:['NA','Enter vitals'];
+}
+function form(){const p={};F.forEach(k=>{const v=$(k).value;p[k]=['age','hr','spo2','temp','sys','dia'].includes(k)?num(v):v});return p}
+function upd(){const[t,w]=triage(form());$('pri').className='tag '+t;$('pri').textContent=t==='NA'?'—':t;$('why').textContent=w}
+F.forEach(k=>$(k).addEventListener('input',upd));
+
+function save(){localStorage.setItem('pts',JSON.stringify(db));render()}
+$('bSave').onclick=()=>{
+  const p=form();if(!p.name){alert('Enter a name or ID');return}
+  p.id=Date.now()+'-'+Math.random().toString(36).slice(2,6);p.time=new Date().toISOString();
+  p.priority=triage(p)[0];p.synced=false;db.push(p);save();clr()};
+function clr(){F.forEach(k=>{$(k).value=k==='sex'?'Unknown':k==='cons'?'Alert':''});upd()}
+$('bClr').onclick=clr;
+
+function render(){
+  const o={RED:0,YELLOW:1,GREEN:2,NA:3};
+  const s=[...db].sort((a,b)=>o[a.priority]-o[b.priority]||a.time.localeCompare(b.time));
+  $('cnt').textContent=db.length;const tb=$('rows');tb.textContent='';
+  s.forEach(p=>{const tr=tb.insertRow();
+    const c=(t)=>{tr.insertCell().textContent=t??'–'};
+    const pc=tr.insertCell();const sp=document.createElement('span');sp.className='tag '+p.priority;sp.textContent=p.priority==='NA'?'—':p.priority;pc.appendChild(sp);
+    c(p.name);c(p.age);c(p.hr);c(p.spo2);c(p.temp);c(p.sys!=null?p.sys+'/'+(p.dia??'?'):null);c(p.loc);c(p.note);c(p.synced?'Yes':'No')});
+  $('net').textContent=navigator.onLine?'Online':'Offline';$('net').className='tag '+(navigator.onLine?'GREEN':'NA');
+}
+
+// ---- Sensor input ----
+let poll=null,port=null,reader=null;
+function live(h,s){
+  $('live').textContent='Sensor: HR '+(h||'–')+' bpm | SpO₂ '+(s||'–')+' %  (place finger on sensor, hold still)';
+  if(h>30&&h<220)$('hr').value=h;if(s>70&&s<=100)$('spo2').value=s;upd()}
+$('bWifi').onclick=()=>{stop();
+  poll=setInterval(async()=>{try{const r=await fetch('http://192.168.4.1/vitals');const d=await r.json();live(d.hr,d.spo2)}
+  catch(e){$('live').textContent='Sensor: cannot reach ESP32 (join its Wi-Fi?)'}},2000);
+  $('live').textContent='Sensor: connecting…'};
+$('bUsb').onclick=async()=>{stop();
+  if(!('serial' in navigator)){alert('Web Serial not supported. Use Chrome/Edge on a laptop, or Wi-Fi mode.');return}
+  try{port=await navigator.serial.requestPort();await port.open({baudRate:115200});
+    const dec=new TextDecoderStream();port.readable.pipeTo(dec.writable);reader=dec.readable.getReader();let buf='';
+    $('live').textContent='Sensor: USB connected';
+    while(true){const{value,done}=await reader.read();if(done)break;buf+=value;let i;
+      while((i=buf.indexOf('\n'))>=0){const l=buf.slice(0,i).trim();buf=buf.slice(i+1);
+        try{const d=JSON.parse(l);live(d.hr,d.spo2)}catch(e){}}}
+  }catch(e){$('live').textContent='Sensor: USB error – '+e.message}};
+async function stop(){clearInterval(poll);poll=null;try{if(reader)await reader.cancel()}catch(e){}try{if(port)await port.close()}catch(e){}reader=port=null}
+$('bOff').onclick=()=>{stop();$('live').textContent='Sensor: not connected'};
+
+// ---- Sync ----
+async function sync(){
+  const url=$('url').value.trim();localStorage.setItem('url',url);
+  if(!url){$('syncMsg').textContent='Enter a server URL first.';return}
+  if(!navigator.onLine){$('syncMsg').textContent='No network. Records stay saved on this device.';return}
+  const todo=db.filter(p=>!p.synced);let ok=0;
+  for(const p of todo){try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok){p.synced=true;ok++}}catch(e){break}}
+  save();$('syncMsg').textContent=ok+' of '+todo.length+' records sent.'}
+$('bSync').onclick=sync;
+window.addEventListener('online',()=>{render();if($('url').value.trim())sync()});
+window.addEventListener('offline',render);
+
+$('bCsv').onclick=()=>{
+  const cols=['id','time','priority','name','age','sex','loc','vol','cons','hr','spo2','temp','sys','dia','note','synced'];
+  const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const csv=[cols.join(',')].concat(db.map(p=>cols.map(c=>q(p[c])).join(','))).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='patients.csv';a.click()};
+
+render();upd();
+</script>
+</body>
+</html>
